@@ -89,6 +89,11 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
             Map<String, String> statistics = new HashMap<>();
             getExtendedStatus(statistics);
+            if(endpointStatistics.isInCall()){
+                statistics.put("Active Meeting Number", meetingNumber);
+            } else {
+                statistics.remove("Active Meeting Number");
+            }
             extendedStatistics.setStatistics(statistics);
 
             localEndpointStatistics = endpointStatistics;
