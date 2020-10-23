@@ -1,3 +1,6 @@
+/*
+ * Copyright (c) 2015-2020 AVI-SPL Inc. All Rights Reserved.
+ */
 package com.avispl.symphony.dal.communicator.management.zoom.rooms;
 
 import com.avispl.symphony.api.dal.control.call.CallController;
@@ -15,10 +18,27 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * An SshCommunicator-based adapter to provide communication with ZoomRooms software
+ * Monitoring features:
+ *      - Call status
+ *      - Audio input mute status
+ *      - General Zoom Rooms information (Room Name, Version, Meeting Number, Active Meeting Number, Account Email)
+ *      - Audio Input/Output settings
+ *      - Video Camera settings
+ * Controlling features:
+ *      - Connect to a meeting
+ *      - Disconnect from the meeting
+ *      - Mute Zoom Rooms audio input
+ *      - Unmute Zoom Rooms audio input
+ */
 public class ZoomRoomsCommunicator extends SshCommunicator implements CallController, Monitorable {
 
 //    private static final String ZCOMMAND_INVITE_SIP = "zCommand Call InviteSipRoom Address: %s cancel: %s";
 //    private static final String ZCOMMAND_INVITE_H323 = "zCommand Call InviteH323Room Address: %s cancel: %s";
+    // zstatus sharing
+    // zstatus numberofscreens
+    //
     private static final String ZCOMMAND_DIAL_START = "zcommand dial start meetingNumber:%s";
     private static final String ZCOMMAND_DIAL_JOIN = "zcommand dial join meetingNumber:%s";
     private static final String ZCOMMAND_CALL_LEAVE = "zcommand call leave\r";
@@ -31,15 +51,18 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     private static final String ZSTATUS_CAMERA_LINE = "zstatus video camera line\r";
     private static final String ZSTATUS_SYSTEM_UNIT = "zstatus systemunit\r";
 
-    EndpointStatistics localEndpointStatistics;
-    ExtendedStatistics localExtendedStatistics;
     private final ReentrantLock controlOperationsLock = new ReentrantLock();
 
     private String meetingNumber;
-    private long latestControlTimestamp;
-    private long controlsCooldownTimeout = 3000;
     private boolean isHost = false;
 
+    /**
+     * ZoomRoomsCommunicator instantiation
+     * Providing a list of success/error for login and other commands
+     * The further error handling is done on per-command basis, since
+     * failure conditions are considered in a bit more advanced way
+     * than checking the end of response only, which may differ also.
+     */
     public ZoomRoomsCommunicator() {
         setCommandSuccessList(Arrays.asList("** end\r\n\n", "OK\r\n\n"));
         setLoginSuccessList(Arrays.asList("\r\n** end\r\n\n", "*r Login successful\r\nOK\r\n\n"));
@@ -62,45 +85,29 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     public List<Statistics> getMultipleStatistics() throws Exception {
         EndpointStatistics endpointStatistics = new EndpointStatistics();
         ExtendedStatistics extendedStatistics = new ExtendedStatistics();
+        refreshSshConnection();
 
-        controlOperationsLock.lock();
-        try {
+        String callStatus = getCallStatus();
+        endpointStatistics.setInCall(callStatus.equals("in meeting"));
 
-            if(isValidControlCoolDown() && localEndpointStatistics != null && localExtendedStatistics != null){
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Device is occupied. Skipping statistics refresh call.");
-                }
-                return Arrays.asList(localEndpointStatistics, localExtendedStatistics);
-            }
-            refreshSshConnection();
-
-            String callStatus = getCallStatus();
-            endpointStatistics.setInCall(callStatus.equals("in meeting"));
-
-            if (endpointStatistics.isInCall()) {
-                boolean microphoneMuted = getMuteStatus();
-                AudioChannelStats audioChannelStats = new AudioChannelStats();
-                audioChannelStats.setMuteTx(microphoneMuted);
-                endpointStatistics.setAudioChannelStats(audioChannelStats);
-                CallStats callStats = new CallStats();
-                callStats.setCallId(meetingNumber);
-                endpointStatistics.setCallStats(callStats);
-            }
-
-            Map<String, String> statistics = new HashMap<>();
-            getExtendedStatus(statistics);
-            if(endpointStatistics.isInCall()){
-                statistics.put("Active Meeting Number", meetingNumber);
-            } else {
-                statistics.remove("Active Meeting Number");
-            }
-            extendedStatistics.setStatistics(statistics);
-
-            localEndpointStatistics = endpointStatistics;
-            localExtendedStatistics = extendedStatistics;
-        } finally {
-            controlOperationsLock.unlock();
+        if (endpointStatistics.isInCall()) {
+            boolean microphoneMuted = getMuteStatus();
+            AudioChannelStats audioChannelStats = new AudioChannelStats();
+            audioChannelStats.setMuteTx(microphoneMuted);
+            endpointStatistics.setAudioChannelStats(audioChannelStats);
+            CallStats callStats = new CallStats();
+            callStats.setCallId(meetingNumber);
+            endpointStatistics.setCallStats(callStats);
         }
+
+        Map<String, String> statistics = new HashMap<>();
+        getExtendedStatus(statistics);
+        if(endpointStatistics.isInCall()){
+            statistics.put("Active Meeting Number", meetingNumber);
+        } else {
+            statistics.remove("Active Meeting Number");
+        }
+        extendedStatistics.setStatistics(statistics);
         return Arrays.asList(endpointStatistics, extendedStatistics);
     }
 
@@ -194,7 +201,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             if(logger.isErrorEnabled()) {
                 logger.error("Dial string does not match expected pattern meetingNumber.meetingPassword@zoomcrc.com. Skipping.");
             }
-            return "";
+            throw new IllegalArgumentException("Dial string does not match expected pattern meetingNumber.meetingPassword@zoomcrc.com");
         } else {
             hasPassword = !StringUtils.isEmpty(matcher.group(2));
             meetingNumber = matcher.group(1);
@@ -222,7 +229,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
                 return meetingNumber;
             }
         }
-        return "";
+        throw new IllegalStateException("Failed to connect to a meeting with dial string: " + value);
     }
 
     /**
@@ -295,7 +302,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         String response;
         controlOperationsLock.lock();
         try {
-            updateLatestControlTimestamp();
             refreshSshConnection();
             response = send(command);
             int retryAttempts = 0;
@@ -319,21 +325,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         if (!isChannelConnected()) {
             connect();
         }
-    }
-
-    /**
-     * Update timestamp of the latest control operation
-     * */
-    private void updateLatestControlTimestamp(){
-        latestControlTimestamp = new Date().getTime();
-    }
-
-    /***
-     * Check whether the control operations cooldown has ended
-     * @return boolean value indicating whether the cooldown has ended or not
-     */
-    private boolean isValidControlCoolDown(){
-        return (new Date().getTime() - latestControlTimestamp) < controlsCooldownTimeout;
     }
 
     @Override
