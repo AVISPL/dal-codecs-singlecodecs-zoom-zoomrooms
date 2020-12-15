@@ -378,6 +378,13 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception during ssh communication
      */
     private void switchMuteStatus(boolean status) throws Exception {
+        String meetingStatus = getCallStatus();
+        if (!meetingStatus.equals(IN_MEETING)) {
+            if(logger.isDebugEnabled()){
+                logger.debug("Not in a meeting. Not able to change mute status.");
+            }
+            return;
+        }
         String command = status ? ON : OFF;
         executeAndVerify(String.format(ZCOMMAND_MUTE, command), "*c zConfiguration Call Microphone Mute");
     }
@@ -389,6 +396,13 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception during ssh communication
      */
     private void switchCameraMuteStatus(boolean status) throws Exception {
+        String meetingStatus = getCallStatus();
+        if (!meetingStatus.equals(IN_MEETING)) {
+            if(logger.isDebugEnabled()){
+                logger.debug("Not in a meeting. Not able to change camera mute status.");
+            }
+            return;
+        }
         String command = status ? ON : OFF;
         executeAndVerify(String.format(ZCOMMAND_CAMERA_MUTE, command), "*c zConfiguration Call Camera Mute");
     }
@@ -485,7 +499,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     public void hangup(String s) throws Exception {
         String meetingStatus = getCallStatus();
         if (!meetingStatus.equals(IN_MEETING) && !meetingStatus.equals(CONNECTING_MEETING)) {
-            logger.warn("Not able to disconnect. Not connected to a meeting.");
             return;
         }
         callDisconnect();
