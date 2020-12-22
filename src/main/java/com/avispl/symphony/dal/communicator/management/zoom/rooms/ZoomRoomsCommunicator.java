@@ -18,7 +18,6 @@ import com.avispl.symphony.dal.communicator.SshCommunicator;
 import com.avispl.symphony.dal.util.StringUtils;
 import org.springframework.util.CollectionUtils;
 
-import javax.naming.OperationNotSupportedException;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
@@ -67,7 +66,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
     private final ReentrantLock controlOperationsLock = new ReentrantLock();
 
-    private String meetingNumber;
     private boolean isHost = false;
 
     /**
@@ -279,23 +277,38 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     }
 
     /**
-     * Join meeting that is currently in progress or start a scheduled one.
+     * Join zoom meeting that is currently in progress or start a scheduled one.
      *
-     * @param value - contains dialString of a format %meetingNumber%.%meetingPassword%@zoomcrc.com
-     *              password is optional.
+     * In order to connect, regular expression is used on the dialString - (\d+)\.?(\d+)?(@[a-z]+?\.[a-z]{2,5}):
+     * (\d+)\.?(\d+)? - matches numeric sequence (supposed meetingNumber) or 2 sequences separated by a dot character
+     * (meetingNumber.meetingPassword). Password is optional, as well as the dot separator.
+     *
+     * (@[a-z]+?\.[a-z]{2,5}) - checks for the domain to make sure dialString parameter matches the general pattern.
+     * We can't rely on any specific zoom SIP domain(s), so the pattern is expecting any simple name with a 2-5 chars
+     * top level domain.
+     *
+     * If the dialString is any regular (non-zoom) SIP/H323 address - the call will not succeed, pattern will not
+     * match and IllegalArgumentException exception will be thrown.
+     * If the dialString is a non-zoom SIP address, which still matches the expected pattern - the start/join command
+     * will be attempted, but it will not succeed, unless exactly matches an existing Zoom meetingNumber/password.
+     *
+     * @param dialString - contains dialString of a format %meetingNumber%.%meetingPassword%@%zoomSIPDomain%
+     *                     password is optional.
      * @return meetingId if operation is successful
+     *
+     * @throws IllegalArgumentException if dialString does not match the expected Zoom meeting SIP address pattern
      */
-    private String joinStartMeeting(String value) throws Exception {
+    private String joinStartMeeting(String dialString) throws Exception {
         boolean hasPassword;
         String meetingNumber;
         String meetingPassword;
 
         Pattern dialStringPattern = Pattern.compile("(\\d+)\\.?(\\d+)?(@[a-z]+?\\.[a-z]{2,5})");
-        Matcher matcher = dialStringPattern.matcher(value);
+        Matcher matcher = dialStringPattern.matcher(dialString);
         if (!matcher.find() && !matcher.matches()) {
             // This might be the section to call out SIP/h323 devices it "invite" functionality fits our needs
             // However, for the simplified approach, this option is skipped for now
-            throw new OperationNotSupportedException("Dial string does not match expected pattern meetingNumber.meetingPassword@zoomcrc.com");
+            throw new IllegalArgumentException("Dial string does not match expected pattern ddddddddd.dddddd@sssssss.sssss");
         } else {
             hasPassword = !StringUtils.isNullOrEmpty(matcher.group(2));
             meetingNumber = matcher.group(1);
@@ -311,7 +324,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             if (logger.isDebugEnabled()) {
                 logger.debug("Joining the meeting: " + meetingNumber);
             }
-            this.meetingNumber = meetingNumber;
             return meetingNumber;
         } else {
             if (executeAndVerify(String.format(ZCOMMAND_DIAL_START, meetingNumber) + (hasPassword ? (" password:" + meetingPassword) : "") + "\r", "*r DialJoinResult (status=OK)")) {
@@ -319,11 +331,10 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
                 if (logger.isDebugEnabled()) {
                     logger.debug("Starting the meeting: " + meetingNumber);
                 }
-                this.meetingNumber = meetingNumber;
                 return meetingNumber;
             }
+            throw new IllegalArgumentException("Failed to connect to a meeting with dial string: " + dialString);
         }
-        throw new IllegalStateException("Failed to connect to a meeting with dial string: " + value);
     }
 
     /**
@@ -372,7 +383,8 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     }
 
     /**
-     * Change ZR microphone mute status
+     * Change ZR microphone mute status.
+     * While not in the meeting - it's not possible to change or retrieve microphone mute status.
      *
      * @param status on/off indicating the mute status
      * @throws Exception during ssh communication
@@ -380,10 +392,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     private void switchMuteStatus(boolean status) throws Exception {
         String meetingStatus = getCallStatus();
         if (!meetingStatus.equals(IN_MEETING)) {
-            if(logger.isDebugEnabled()){
-                logger.debug("Not in a meeting. Not able to change mute status.");
-            }
-            return;
+            throw new IllegalStateException("Not in a meeting. Not able to change mute status.");
         }
         String command = status ? ON : OFF;
         executeAndVerify(String.format(ZCOMMAND_MUTE, command), "*c zConfiguration Call Microphone Mute");
@@ -391,6 +400,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
     /**
      * Change ZR camera mute status
+     * While not in the meeting - it's not possible to change or retrieve camera mute status.
      *
      * @param status true or false indicating the mute status
      * @throws Exception during ssh communication
@@ -398,10 +408,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     private void switchCameraMuteStatus(boolean status) throws Exception {
         String meetingStatus = getCallStatus();
         if (!meetingStatus.equals(IN_MEETING)) {
-            if(logger.isDebugEnabled()){
-                logger.debug("Not in a meeting. Not able to change camera mute status.");
-            }
-            return;
+            throw new IllegalStateException("Not in a meeting. Not able to change camera mute status.");
         }
         String command = status ? ON : OFF;
         executeAndVerify(String.format(ZCOMMAND_CAMERA_MUTE, command), "*c zConfiguration Call Camera Mute");
@@ -410,10 +417,9 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     /**
      * Disconnect from the active call or from an idle call (ZR is trying to connect)
      *
-     * @return true if disconnected successfully, false if an error has occured
+     * @return true if disconnected successfully, false if an error has occurred
      */
     private boolean callDisconnect() throws Exception {
-        meetingNumber = "";
         if (isHost) {
             return executeAndVerify(ZCOMMAND_CALL_DISCONNECT, "*r CallDisconnectResult");
         } else {
@@ -480,12 +486,13 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         }
         String meetingStatus = getCallStatus();
         if (meetingStatus.equals(IN_MEETING)) {
-            if(logger.isWarnEnabled()) {
-                logger.warn("Not able to connect. Meeting " + meetingNumber + " is in progress.");
+            String meetingNumber = getMeetingId();
+            if(logger.isDebugEnabled()) {
+                logger.debug("Not able to connect. Meeting " + meetingNumber + " is in progress.");
             }
-            return null;
+            return meetingNumber;
         } else if (meetingStatus.equals(CONNECTING_MEETING)) {
-            // Need to be able to recover if terminal stucks in a "connecting" state.
+            // Need to be able to recover if terminal gets stuck in a "connecting" state.
             // This may happen if some specific non-existing meeting numbers are used (this may happen by accident)
             // in which case ZR app will stuck without giving an ability to disconnect (unless it's done manually)
             // So it is assumed that if we're getting here - it's either multiple calls are being addressed one right
@@ -508,10 +515,17 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     public CallStatus retrieveCallStatus(String s) throws Exception {
         CallStatus callStatus = new CallStatus();
         callStatus.setCallStatusState(getCallStatus().equals(IN_MEETING) ? CallStatus.CallStatusState.Connected : CallStatus.CallStatusState.Disconnected);
-        callStatus.setCallId(meetingNumber);
+        callStatus.setCallId(getMeetingId());
         return callStatus;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * Attempting to retrieve ZoomRooms' mute status while ZoomRooms is not connected to any meeting will
+     * end up with an error. This is the case for both retrieving mute state and updating it since the same
+     * command is used for both - {@link #ZCOMMAND_MUTE_STATUS} and {@link #ZCOMMAND_MUTE}
+     */
     @Override
     public MuteStatus retrieveMuteStatus() throws Exception {
         String meetingStatus = getCallStatus();
@@ -523,9 +537,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
     @Override
     public void sendMessage(PopupMessage popupMessage) throws Exception {
-        if (logger.isDebugEnabled()) {
-            logger.debug("SendMessage operation is not supported. Message received: " + popupMessage.getMessage());
-        }
+        throw new UnsupportedOperationException("Send message functionality is not supported");
     }
 
     @Override
