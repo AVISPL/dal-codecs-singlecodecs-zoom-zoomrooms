@@ -333,7 +333,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
                 }
                 return meetingNumber;
             }
-            throw new IllegalArgumentException("Failed to connect to a meeting with dial string: " + dialString);
+            throw new RuntimeException("Failed to connect to a meeting with dial string: " + dialString);
         }
     }
 
