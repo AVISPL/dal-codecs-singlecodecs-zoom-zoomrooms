@@ -64,6 +64,8 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     private static final String IN_MEETING = "in meeting";
     private static final String CONNECTING_MEETING = "connecting meeting";
 
+    private static final int MAX_STATUS_POLL_ATTEMPT = 5;
+
     private final ReentrantLock controlOperationsLock = new ReentrantLock();
 
     private boolean isHost = false;
@@ -116,7 +118,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
             // Exposing these in case if the dial was issued directly from the device page
             statistics.put("Call Control#Microphone Mute", "");
-            controls.add(createSwitch("Call Control#Microphone Mute", retrieveMuteStatus().equals(MuteStatus.Muted) ? 1 : 0));
+            controls.add(createSwitch("Call Control#Microphone Mute", getMuteStatus() ? 1 : 0));
             statistics.put("Call Control#Video Camera Mute", "");
             controls.add(createSwitch("Call Control#Video Camera Mute", retrieveCameraMuteStatus() ? 1 : 0));
 
@@ -443,8 +445,16 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * Execute the command and check the response to contain "verifyString" in a few attempts.
      * It's not added into the general "CommandSuccess/Failure" list because the basic communicator
      * checks for endsWith() but there's no guarantee that the response will end with a certain string,
-     * also sometimes there are multiple comands perfomed automatically on entry with multiple "** end" breaks.
-     * This part helps to have another layer of response verification.
+     * also sometimes there are multiple commands performed automatically on entry with multiple "** end" breaks.
+     * It makes it impossible to verify whether the "** end" string was indicating the "real" end of a payload
+     * or not.
+     * So current scenario is:
+     *  - Command is sent
+     *  - Verifying if the response contains substring, specific for the current command
+     *      - If not - the communicator did not receive the response and we can't rely on any data in the response as an
+     *        indicator of an "end of output", re-issuing the command.
+     *      - If it contains the expected substring - OK, the response is unique and the communicator has reached
+     *        an end of output.
      *
      * @param command      to perform
      * @param verifyString string that should be present in a response payload
@@ -479,6 +489,22 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * Need to be able to recover if terminal gets stuck in a permanent "connecting" state.
+     * This may happen if some specific non-existing meeting numbers are used (this may happen by accident) or
+     * a password is not provided for a meeting requiring one, in which case ZR app will stuck without giving
+     * an ability to disconnect (unless it's done manually), so it is assumed that if we're getting here -
+     * it's either multiple calls are being addressed one right after another, which is less likely,
+     * or that the terminal got stuck because of this issue.
+     *
+     * Current workaround for a "frozen" call attempts is to check callStatus 5 times with a 1s delay in
+     * between the checks and if the connection is not resolved by then - the stale call is disconnected
+     * and the device is requested to join/start the requested meeting. Unfortunately, it's not possible
+     * to retrieve the meetingId for the meeting, that is in "connecting" state (ZR is not associated
+     * with a meeting)
+     */
     @Override
     public String dial(DialDevice dialDevice) throws Exception {
         if (StringUtils.isNullOrEmpty(dialDevice.getDialString())) {
@@ -492,11 +518,18 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             }
             return meetingNumber;
         } else if (meetingStatus.equals(CONNECTING_MEETING)) {
-            // Need to be able to recover if terminal gets stuck in a "connecting" state.
-            // This may happen if some specific non-existing meeting numbers are used (this may happen by accident)
-            // in which case ZR app will stuck without giving an ability to disconnect (unless it's done manually)
-            // So it is assumed that if we're getting here - it's either multiple calls are being addressed one right
-            // after another, which is less likely, or that the terminal got stuck because of this issue.
+            for (int i = 0; i < MAX_STATUS_POLL_ATTEMPT; i++) {
+                meetingStatus = getCallStatus();
+                if (!meetingStatus.equals(CONNECTING_MEETING) && !meetingStatus.equals(IN_MEETING)) {
+                    return joinStartMeeting(dialDevice.getDialString());
+                } else if (meetingStatus.equals(IN_MEETING)) {
+                    return getMeetingId();
+                }
+                Thread.sleep(1000);
+            }
+            if(logger.isDebugEnabled()) {
+                logger.debug("ZoomRooms device is in 'connecting' state, unable to resolve, issuing new connection.");
+            }
             callDisconnect();
         }
         return joinStartMeeting(dialDevice.getDialString());
@@ -511,11 +544,22 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         callDisconnect();
     }
 
+    /**
+     * It's not possible to retrieve meetingId (callInfo) if the device is not in the call, fetching the information
+     * will lead to the "CallInfoResult(status=Error): Result reason: "Not in meeting"" error,
+     * so ZR meetingId is only fetched when the device is in the call, otherwise -
+     * input parameter callId value is provided.
+     */
     @Override
-    public CallStatus retrieveCallStatus(String s) throws Exception {
+    public CallStatus retrieveCallStatus(String callId) throws Exception {
         CallStatus callStatus = new CallStatus();
-        callStatus.setCallStatusState(getCallStatus().equals(IN_MEETING) ? CallStatus.CallStatusState.Connected : CallStatus.CallStatusState.Disconnected);
-        callStatus.setCallId(getMeetingId());
+        if(getCallStatus().equals(IN_MEETING)) {
+            callStatus.setCallStatusState(CallStatus.CallStatusState.Connected);
+            callStatus.setCallId(getMeetingId());
+        } else {
+            callStatus.setCallStatusState(CallStatus.CallStatusState.Disconnected);
+            callStatus.setCallId(callId);
+        }
         return callStatus;
     }
 
@@ -524,13 +568,14 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      *
      * Attempting to retrieve ZoomRooms' mute status while ZoomRooms is not connected to any meeting will
      * end up with an error. This is the case for both retrieving mute state and updating it since the same
-     * command is used for both - {@link #ZCOMMAND_MUTE_STATUS} and {@link #ZCOMMAND_MUTE}
+     * command is used for both - {@link #ZCOMMAND_MUTE_STATUS} and {@link #ZCOMMAND_MUTE}, so if the device
+     * is not in the call - null MuteStatus is populated
      */
     @Override
     public MuteStatus retrieveMuteStatus() throws Exception {
         String meetingStatus = getCallStatus();
         if (!meetingStatus.equals(IN_MEETING)) {
-            return MuteStatus.Unmuted;
+            return null;
         }
         return getMuteStatus() ? MuteStatus.Muted : MuteStatus.Unmuted;
     }
