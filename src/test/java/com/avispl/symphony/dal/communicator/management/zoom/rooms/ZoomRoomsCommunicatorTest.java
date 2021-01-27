@@ -27,7 +27,7 @@ public class ZoomRoomsCommunicatorTest {
     @BeforeEach
     void setUp () throws Exception {
         zoomRoomsCommunicator = new ZoomRoomsCommunicator();
-        zoomRoomsCommunicator.setHost("172.31.254.213");
+        zoomRoomsCommunicator.setHost("***REMOVED***4");
         zoomRoomsCommunicator.setLogin("zoom");
         zoomRoomsCommunicator.setPort(2244);
         zoomRoomsCommunicator.setPassword("***REMOVED***");
@@ -44,11 +44,17 @@ public class ZoomRoomsCommunicatorTest {
     public void testDial() throws Exception {
         List<Statistics> stats = zoomRoomsCommunicator.getMultipleStatistics();
         DialDevice dialDevice = new DialDevice();
-        dialDevice.setDialString("2754909175.013196@zoomcrc.com");
-        dialDevice.setProtocol(Protocol.H323);
+        dialDevice.setDialString("2754909175@zoomcrc.com");
         zoomRoomsCommunicator.dial(dialDevice);
+        Thread.sleep(5000);
         zoomRoomsCommunicator.getMultipleStatistics();
-        Assert.assertEquals(((ExtendedStatistics) stats.get(1)).getStatistics().get("Call Status"), "in meeting");
+        Assert.assertEquals(CallStatus.CallStatusState.Connected, zoomRoomsCommunicator.retrieveCallStatus("").getCallStatusState());
+    }
+
+    @Test
+    public void testDisconnect() throws Exception {
+        zoomRoomsCommunicator.hangup("");
+        Assert.assertEquals(CallStatus.CallStatusState.Disconnected, zoomRoomsCommunicator.retrieveCallStatus("").getCallStatusState());
     }
 
     @Test
@@ -65,7 +71,7 @@ public class ZoomRoomsCommunicatorTest {
         if(zoomRoomsCommunicator.retrieveCallStatus("").getCallStatusState().equals(CallStatus.CallStatusState.Disconnected)){
             fail("Has to be joined to the meeting");
         }
-        if(zoomRoomsCommunicator.retrieveMuteStatus().equals(MuteStatus.Muted)){
+        if(MuteStatus.Muted.equals(zoomRoomsCommunicator.retrieveMuteStatus())){
             zoomRoomsCommunicator.unmute();
             Assert.assertEquals(MuteStatus.Unmuted, zoomRoomsCommunicator.retrieveMuteStatus());
         } else {
@@ -81,7 +87,7 @@ public class ZoomRoomsCommunicatorTest {
         }
         ControllableProperty muteCommand = new ControllableProperty();
         muteCommand.setProperty("Call Control#Microphone Mute");
-        if(zoomRoomsCommunicator.retrieveMuteStatus().equals(MuteStatus.Muted)){
+        if(MuteStatus.Muted.equals(zoomRoomsCommunicator.retrieveMuteStatus())){
             muteCommand.setValue(0);
             zoomRoomsCommunicator.controlProperty(muteCommand);
             Assert.assertEquals(MuteStatus.Unmuted, zoomRoomsCommunicator.retrieveMuteStatus());
@@ -152,4 +158,5 @@ public class ZoomRoomsCommunicatorTest {
         zoomRoomsCommunicator.controlProperty(controllableProperty);
         // Nothing to assert here, only created for manual testing
     }
+
 }
