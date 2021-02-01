@@ -502,8 +502,9 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             /* Some commands have a parameter set after ':' character, since this is not relevant for
             * the response validation - anything after the colon is stripped, including the colon character */
             String verifyString = commandsVerifiers.get(command.split(":")[0].trim());
-            /* Need to make sure specific substring is there as well and the 'normal' output breakers */
-            if (response.contains(verifyString) && (response.trim().endsWith("OK") || response.trim().endsWith("** end"))) {
+            String trimmedResponse = response.trim();
+            /* Need to make sure specific substring is there as well as the 'normal' output breakers */
+            if (response.contains(verifyString) && (trimmedResponse.endsWith("OK") || trimmedResponse.endsWith("** end"))) {
                 if (logger.isTraceEnabled()) {
                     logger.trace("Custom Done reading");
                 }
