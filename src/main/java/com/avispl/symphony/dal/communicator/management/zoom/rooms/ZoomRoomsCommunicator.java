@@ -13,13 +13,13 @@ import com.avispl.symphony.api.dal.dto.control.call.DialDevice;
 import com.avispl.symphony.api.dal.dto.control.call.MuteStatus;
 import com.avispl.symphony.api.dal.dto.control.call.PopupMessage;
 import com.avispl.symphony.api.dal.dto.monitor.*;
+import com.avispl.symphony.api.dal.error.CommandFailureException;
 import com.avispl.symphony.api.dal.monitor.Monitorable;
 import com.avispl.symphony.dal.communicator.SshCommunicator;
 import com.avispl.symphony.dal.util.StringUtils;
 import org.springframework.util.CollectionUtils;
 
 import java.util.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,6 +43,8 @@ import java.util.regex.Pattern;
  */
 public class ZoomRoomsCommunicator extends SshCommunicator implements CallController, Monitorable, Controller {
 
+    private enum CameraMovementDirection {Up, Down, Left, Right}
+
     private static final String ZCOMMAND_DIAL_START = "zcommand dial start meetingNumber:%s";
     private static final String ZCOMMAND_DIAL_JOIN = "zcommand dial join meetingNumber:%s";
     private static final String ZCOMMAND_CALL_LEAVE = "zcommand call leave\r";
@@ -64,24 +66,49 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     private static final String IN_MEETING = "in meeting";
     private static final String CONNECTING_MEETING = "connecting meeting";
 
+    /**
+     *  A number of attempts to perform for getting the conference (call) status while performing
+     * {@link #dial(DialDevice)} operation
+     */
     private static final int MAX_STATUS_POLL_ATTEMPT = 5;
-
-    private final ReentrantLock controlOperationsLock = new ReentrantLock();
+    /**
+     * Entries that help to verify whether certain commands were successful or not.
+     * Key represents command and value - the expected response substring.
+     */
+    private Map<String, String> commandsVerifiers = new HashMap<>();
 
     private boolean isHost = false;
 
     /**
      * ZoomRoomsCommunicator instantiation
-     * Providing a list of success/error for login and other commands
-     * The further error handling is done on per-command basis, since
-     * failure conditions are considered in a bit more advanced way
-     * than checking the end of response only, which may differ also.
+     * Providing a list of success/error for login and other commands as well as addint entries to {@link #commandsVerifiers}
+     * map, which is used for {@link #doneReading(String, String)} checks
      */
     public ZoomRoomsCommunicator() {
-        setCommandSuccessList(Arrays.asList("** end\r\n\n", "OK\r\n\n"));
+        setCommandSuccessList(Arrays.asList("** end\r\n\r\nOK\r\n"));
         setLoginSuccessList(Arrays.asList("\r\n** end\r\n\n", "*r Login successful\r\nOK\r\n\n"));
         setLoginErrorList(Collections.singletonList("Permission denied, please try again.\n"));
         setCommandErrorList(Arrays.asList("*e Connection rejected\r\n\n", "ERROR\r\n\n"));
+
+        /* Trim is done once per adapter instantiation, but it's easier to see which command does entry refer to */
+        commandsVerifiers.put(ZSTATUS_AUDIO_INPUT_LINE.trim(), "*s Audio Input Line");
+        commandsVerifiers.put(ZSTATUS_AUDIO_OUTPUT_LINE.trim(), "*s Audio Output Line");
+        commandsVerifiers.put(ZSTATUS_SYSTEM_UNIT.trim(), "*s SystemUnit");
+        commandsVerifiers.put(ZSTATUS_CAMERA_LINE.trim(), "*s Video Camera Line");
+        commandsVerifiers.put(ZCOMMAND_CALL_STATUS.trim(), "*s Call Status:");
+        commandsVerifiers.put(ZCOMMAND_CALL_INFO.trim(), "*r InfoResult");
+        commandsVerifiers.put(ZCOMMAND_MUTE_STATUS.trim(), "*c zConfiguration Call Microphone Mute");
+        commandsVerifiers.put(ZCOMMAND_CAMERA_MUTE_STATUS.trim(), "*c zConfiguration Call Camera Mute");
+        commandsVerifiers.put(ZCOMMAND_CALL_DISCONNECT.trim(), "*r CallDisconnectResult");
+        commandsVerifiers.put(ZCOMMAND_CALL_LEAVE.trim(), "*r CallDisconnectResult");
+
+        /* Some commands variables have a parameter added, so to preserve uniqueness - generic part of such commands
+        * is used as an entry. */
+        commandsVerifiers.put("zcommand dial join meetingNumber", "*r DialJoinResult");
+        commandsVerifiers.put("zcommand dial start meetingNumber", "*r DialJoinResult");
+        commandsVerifiers.put("zconfiguration call microphone mute", "*c zConfiguration Call Microphone Mute");
+        commandsVerifiers.put("zconfiguration call camera mute", "*c zConfiguration Call Camera Mute");
+        commandsVerifiers.put("zcommand call cameracontrol id", "*r CameraControl");
     }
 
     @Override
@@ -194,9 +221,9 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception if an error occurred during communication
      */
     private void getExtendedStatus(Map<String, String> statistics) throws Exception {
-        String audioInputLine = execute(ZSTATUS_AUDIO_INPUT_LINE, "*s Audio Input Line");
-        String audioOutputLine = execute(ZSTATUS_AUDIO_OUTPUT_LINE, "*s Audio Output Line");
-        String systemUnit = execute(ZSTATUS_SYSTEM_UNIT, "*s SystemUnit");
+        String audioInputLine = send(ZSTATUS_AUDIO_INPUT_LINE);
+        String audioOutputLine = send(ZSTATUS_AUDIO_OUTPUT_LINE);
+        String systemUnit = send(ZSTATUS_SYSTEM_UNIT);
 
         Map<String, String> lineParameters = parseZoomRoomsProperties(audioInputLine, "*s Audio Input Line");
         lineParameters.putAll(parseZoomRoomsProperties(audioOutputLine, "*s Audio Output Line"));
@@ -252,7 +279,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception during ssh communication
      */
     private Map<String, String> retrieveCameraLineParameters() throws Exception {
-        String cameraLine = execute(ZSTATUS_CAMERA_LINE, "*s Video Camera Line");
+        String cameraLine = send(ZSTATUS_CAMERA_LINE);
         return parseZoomRoomsProperties(cameraLine, "*s Video Camera Line");
     }
 
@@ -294,6 +321,13 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * If the dialString is a non-zoom SIP address, which still matches the expected pattern - the start/join command
      * will be attempted, but it will not succeed, unless exactly matches an existing Zoom meetingNumber/password.
      *
+     * In ZoomRooms, CLI communication with generic SIP/H323 endpoints is done using 2 additional commands, which
+     * imply starting ZR PMI first:
+     *      zCommand Call InviteSipRoom Address: %s cancel: on/off
+     *      zCommand Call InviteH323Room Address: %s cancel: on/off
+     * Future use of these commands will require to have a way to reliably distinguish between Zoom SIP addresses and
+     * generic SIP/H323.
+     *
      * @param dialString - contains dialString of a format %meetingNumber%.%meetingPassword%@%zoomSIPDomain%
      *                     password is optional.
      * @return meetingId if operation is successful
@@ -321,21 +355,34 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             logger.debug(String.format("Attempt to join or start a meeting with meetingNumber: %s and password: %s", meetingNumber, meetingPassword));
         }
 
-        if (executeAndVerify(String.format(ZCOMMAND_DIAL_JOIN, meetingNumber) + (hasPassword ? (" password:" + meetingPassword) : "") + "\r", "*r DialJoinResult (status=OK)")) {
+        /* Attempting to start a meeting and if the command does not succeed - joining the meeting instead,
+        * since there's no way currently to pass start/join type of dial action. Since the target destination
+        * may be someone's PMI - it won't start before the host joins the meeting, so in case of successful
+        * start/join commands we populate target meetingNumber (since the request itself has succeeded).
+        * Otherwise, in case if ZoomRooms is waiting for the host to join, which can take some time, calling
+        * getMeetingId() will result with a timeout error (the operation does not provide any feedback while
+        * ZR is in the described state, so it fails with an error and is only supposed to be used while ZR is in the call)
+        *
+        * Possible errors are handled by the communicator, so if the 'join' fallback does not work -
+        * CommandFailureException is thrown and the operation is considered unsuccessful.
+        * */
+        try {
+            send(String.format(ZCOMMAND_DIAL_START, meetingNumber) + (hasPassword ? (" password:" + meetingPassword) : "") + "\r");
+            isHost = true;
+            if (logger.isDebugEnabled()) {
+                logger.debug("Starting the meeting: " + meetingNumber);
+            }
+            return meetingNumber;
+        } catch (CommandFailureException cfe) {
+            if(logger.isDebugEnabled()) {
+                logger.debug(String.format("Unable to start meeting %s, switching to join", meetingNumber));
+            }
+            send(String.format(ZCOMMAND_DIAL_JOIN, meetingNumber) + (hasPassword ? (" password:" + meetingPassword) : "") + "\r");
             isHost = false;
             if (logger.isDebugEnabled()) {
                 logger.debug("Joining the meeting: " + meetingNumber);
             }
             return meetingNumber;
-        } else {
-            if (executeAndVerify(String.format(ZCOMMAND_DIAL_START, meetingNumber) + (hasPassword ? (" password:" + meetingPassword) : "") + "\r", "*r DialJoinResult (status=OK)")) {
-                isHost = true;
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Starting the meeting: " + meetingNumber);
-                }
-                return meetingNumber;
-            }
-            throw new RuntimeException("Failed to connect to a meeting with dial string: " + dialString);
         }
     }
 
@@ -345,7 +392,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @return one of the following: "in meeting" | "connecting meeting" | "not in meeting"
      */
     private String getCallStatus() throws Exception {
-        String response = execute(ZCOMMAND_CALL_STATUS, "*s Call Status:");
+        String response = send(ZCOMMAND_CALL_STATUS);
         String[] callStatus = response.toLowerCase().split("call status:");
 
         return callStatus[1].substring(0, callStatus[1].indexOf("** end")).trim().replaceAll("_", " ");
@@ -358,7 +405,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception while ssh communication
      */
     private String getMeetingId() throws Exception {
-        String response = execute(ZCOMMAND_CALL_INFO, "*r InfoResult (status=OK)");
+        String response = send(ZCOMMAND_CALL_INFO);
         return parseZoomRoomsProperties(response, "*r InfoResult Info meeting_id").get("*r InfoResult Info meeting_id");
     }
 
@@ -369,7 +416,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception during ssh communication
      */
     private boolean getMuteStatus() throws Exception {
-        String muteStatus = execute(ZCOMMAND_MUTE_STATUS, "*c zConfiguration Call Microphone Mute").toLowerCase();
+        String muteStatus = send(ZCOMMAND_MUTE_STATUS).toLowerCase();
         return muteStatus.substring(muteStatus.indexOf("mute:") + 5, muteStatus.lastIndexOf("** end")).trim().equals(ON);
     }
 
@@ -380,7 +427,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * @throws Exception during ssh communication
      */
     private boolean retrieveCameraMuteStatus() throws Exception {
-        String muteStatus = execute(ZCOMMAND_CAMERA_MUTE_STATUS, "*c zConfiguration Call Camera Mute").toLowerCase();
+        String muteStatus = send(ZCOMMAND_CAMERA_MUTE_STATUS).toLowerCase();
         return muteStatus.substring(muteStatus.indexOf("mute:") + 5, muteStatus.lastIndexOf("** end")).trim().equals(ON);
     }
 
@@ -397,7 +444,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             throw new IllegalStateException("Not in a meeting. Not able to change mute status.");
         }
         String command = status ? ON : OFF;
-        executeAndVerify(String.format(ZCOMMAND_MUTE, command), "*c zConfiguration Call Microphone Mute");
+        send(String.format(ZCOMMAND_MUTE, command));
     }
 
     /**
@@ -413,71 +460,58 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             throw new IllegalStateException("Not in a meeting. Not able to change camera mute status.");
         }
         String command = status ? ON : OFF;
-        executeAndVerify(String.format(ZCOMMAND_CAMERA_MUTE, command), "*c zConfiguration Call Camera Mute");
+        send(String.format(ZCOMMAND_CAMERA_MUTE, command));
     }
 
     /**
      * Disconnect from the active call or from an idle call (ZR is trying to connect)
-     *
-     * @return true if disconnected successfully, false if an error has occurred
      */
-    private boolean callDisconnect() throws Exception {
+    private void callDisconnect() throws Exception {
         if (isHost) {
-            return executeAndVerify(ZCOMMAND_CALL_DISCONNECT, "*r CallDisconnectResult");
+            send(ZCOMMAND_CALL_DISCONNECT);
         } else {
-            return executeAndVerify(ZCOMMAND_CALL_LEAVE, "*r CallDisconnectResult");
+            send(ZCOMMAND_CALL_LEAVE);
         }
     }
 
     /**
-     * Execute command using execute() method and simply check whether the command completed successfully
+     * {@inheritDoc}
      *
-     * @param command      to perform
-     * @param verifyString string that should be present in a response payload
-     * @return boolean value indicating whether the operation is successful
+     * This methods overrides the done reading because, similarly to the way some Cisco CLIs work,
+     * some commands end with "** end" and some have it in the middle and with "OK" while the others have "OK"
+     * in the middle. Also, eventually ZR CLI returns additional data, such as Phonebook entries, for instance,
+     * so we need to react to a specific response strings for each zcommand.
+     * So, the custom solution will work for commands that start with zcommand/zstatus/zconfiguration, for the rest -
+     * such as login, a default implementation works fine, since we can ignore the rest of the payload there
+     * if no exceptions were thrown during the operation
      */
-    private boolean executeAndVerify(String command, String verifyString) throws Exception {
-        String response = execute(command, verifyString);
-        return !StringUtils.isNullOrEmpty(response);
-    }
-
-    /**
-     * Execute the command and check the response to contain "verifyString" in a few attempts.
-     * It's not added into the general "CommandSuccess/Failure" list because the basic communicator
-     * checks for endsWith() but there's no guarantee that the response will end with a certain string,
-     * also sometimes there are multiple commands performed automatically on entry with multiple "** end" breaks.
-     * It makes it impossible to verify whether the "** end" string was indicating the "real" end of a payload
-     * or not.
-     * So current scenario is:
-     *  - Command is sent
-     *  - Verifying if the response contains substring, specific for the current command
-     *      - If not - the communicator did not receive the response and we can't rely on any data in the response as an
-     *        indicator of an "end of output", re-issuing the command.
-     *      - If it contains the expected substring - OK, the response is unique and the communicator has reached
-     *        an end of output.
-     *
-     * @param command      to perform
-     * @param verifyString string that should be present in a response payload
-     * @return empty string or a command response, if successful
-     */
-    private String execute(String command, String verifyString) throws Exception {
-        String response;
-        controlOperationsLock.lock();
-        try {
-            refreshSshConnection();
-            response = send(command);
-            int retryAttempts = 0;
-            while (!response.contains(verifyString)) {
-                retryAttempts++;
-                response = send(command);
-                if (retryAttempts >= 10) {
-                    throw new IllegalStateException(String.format("Failed to verify response for command %s. Expected output: %s", command, verifyString));
+    @Override
+    protected boolean doneReading(String command, String response) throws CommandFailureException {
+        /* Need to lower case it in case there are new commands that are not set strictly to lower case when sent */
+        String lowerCaseCommand = command.toLowerCase();
+        if (lowerCaseCommand.startsWith("zcommand") || lowerCaseCommand.startsWith("zstatus") || lowerCaseCommand.startsWith("zconfiguration")) {
+            for (String string : getCommandErrorList()) {
+                if (response.endsWith(string)) {
+                    if (logger.isTraceEnabled()) {
+                        logger.trace("Custom Done reading, found Error string: " + string);
+                    }
+                    throw new CommandFailureException(host, command, response);
                 }
             }
-        } finally {
-            controlOperationsLock.unlock();
+
+            /* Some commands have a parameter set after ':' character, since this is not relevant for
+            * the response validation - anything after the colon is stripped, including the colon character */
+            String verifyString = commandsVerifiers.get(command.split(":")[0].trim());
+            /* Need to make sure specific substring is there as well and the 'normal' output breakers */
+            if (response.contains(verifyString) && (response.trim().endsWith("OK") || response.trim().endsWith("** end"))) {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Custom Done reading");
+                }
+                return true;
+            }
+            return false;
         }
-        return response;
+        return super.doneReading(command, response);
     }
 
     /**
@@ -545,6 +579,8 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     }
 
     /**
+     * {@inheritDoc}
+     *
      * It's not possible to retrieve meetingId (callInfo) if the device is not in the call, fetching the information
      * will lead to the "CallInfoResult(status=Error): Result reason: "Not in meeting"" error,
      * so ZR meetingId is only fetched when the device is in the call, otherwise -
@@ -553,7 +589,8 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
     @Override
     public CallStatus retrieveCallStatus(String callId) throws Exception {
         CallStatus callStatus = new CallStatus();
-        if(getCallStatus().equals(IN_MEETING)) {
+        String callStatusResponse = getCallStatus();
+        if (callStatusResponse.equals(IN_MEETING)) {
             callStatus.setCallStatusState(CallStatus.CallStatusState.Connected);
             callStatus.setCallId(getMeetingId());
         } else {
@@ -595,6 +632,16 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         switchMuteStatus(false);
     }
 
+    /**
+     * Move camera to a direction passed with {@link CameraMovementDirection}
+     *
+     * @param direction - movement direction
+     * @throws Exception if any errors occur
+     */
+    private void moveCamera(CameraMovementDirection direction) throws Exception {
+        send(String.format("zcommand call cameracontrol id:0 state:start action:%s\r", direction));
+    }
+
     @Override
     public void controlProperty(ControllableProperty controllableProperty) throws Exception {
         String property = controllableProperty.getProperty();
@@ -602,16 +649,16 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
         switch (property) {
             case "Video Camera#Move Up":
-                executeAndVerify("zCommand Call CameraControl Id:0 State:Start Action:Up\r", "*r CameraControl (status=OK)");
+                moveCamera(CameraMovementDirection.Up);
                 break;
             case "Video Camera#Move Down":
-                executeAndVerify("zCommand Call CameraControl Id:0 State:Start Action:Down\r", "*r CameraControl (status=OK)");
+                moveCamera(CameraMovementDirection.Down);
                 break;
             case "Video Camera#Move Left":
-                executeAndVerify("zCommand Call CameraControl Id:0 State:Start Action:Left\r", "*r CameraControl (status=OK)");
+                moveCamera(CameraMovementDirection.Left);
                 break;
             case "Video Camera#Move Right":
-                executeAndVerify("zCommand Call CameraControl Id:0 State:Start Action:Right\r", "*r CameraControl (status=OK)");
+                moveCamera(CameraMovementDirection.Right);
                 break;
             case "Call Control#Video Camera Mute":
                 switchCameraMuteStatus(value.equals("1"));
