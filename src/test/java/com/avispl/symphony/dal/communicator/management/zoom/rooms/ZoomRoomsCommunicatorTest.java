@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.Assert;
 
 import java.util.List;
-import java.util.logging.Level;
 
 import static org.junit.Assert.fail;
 
@@ -44,7 +43,7 @@ public class ZoomRoomsCommunicatorTest {
     public void testDial() throws Exception {
         List<Statistics> stats = zoomRoomsCommunicator.getMultipleStatistics();
         DialDevice dialDevice = new DialDevice();
-        dialDevice.setDialString("2754909175@zoomcrc.com");
+        dialDevice.setDialString("2754909175.013196@zoomcrc.com");
         zoomRoomsCommunicator.dial(dialDevice);
         Thread.sleep(5000);
         zoomRoomsCommunicator.getMultipleStatistics();
