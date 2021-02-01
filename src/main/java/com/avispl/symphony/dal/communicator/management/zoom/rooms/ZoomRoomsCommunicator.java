@@ -105,7 +105,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         /* Some commands variables have a parameter added, so to preserve uniqueness - generic part of such commands
         * is used as an entry. */
         commandsVerifiers.put("zcommand dial join meetingNumber", "*r DialJoinResult");
-        commandsVerifiers.put("zcommand dial start meetingNumber", "*r DialJoinResult");
+        commandsVerifiers.put("zcommand dial start meetingNumber", "*r DialStartResult");
         commandsVerifiers.put("zconfiguration call microphone mute", "*c zConfiguration Call Microphone Mute");
         commandsVerifiers.put("zconfiguration call camera mute", "*c zConfiguration Call Camera Mute");
         commandsVerifiers.put("zcommand call cameracontrol id", "*r CameraControl");
