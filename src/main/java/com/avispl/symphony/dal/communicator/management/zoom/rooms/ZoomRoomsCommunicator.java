@@ -85,7 +85,7 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
      * map, which is used for {@link #doneReading(String, String)} checks
      */
     public ZoomRoomsCommunicator() {
-        setCommandSuccessList(Arrays.asList("** end\r\n\r\nOK\r\n"));
+        setCommandSuccessList(Collections.singletonList("** end\r\n\r\nOK\r\n"));
         setLoginSuccessList(Arrays.asList("\r\n** end\r\n\n", "*r Login successful\r\nOK\r\n\n"));
         setLoginErrorList(Collections.singletonList("Permission denied, please try again.\n"));
         setCommandErrorList(Arrays.asList("*e Connection rejected\r\n\n", "ERROR\r\n\n"));
@@ -106,8 +106,6 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         * is used as an entry. */
         commandsVerifiers.put("zcommand dial join meetingNumber", "*r DialJoinResult");
         commandsVerifiers.put("zcommand dial start meetingNumber", "*r DialStartResult");
-        commandsVerifiers.put("zconfiguration call microphone mute", "*c zConfiguration Call Microphone Mute");
-        commandsVerifiers.put("zconfiguration call camera mute", "*c zConfiguration Call Camera Mute");
         commandsVerifiers.put("zcommand call cameracontrol id", "*r CameraControl");
     }
 
