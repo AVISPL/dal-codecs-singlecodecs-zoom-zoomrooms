@@ -85,7 +85,7 @@ public class ZoomRoomsCommunicatorTest {
             fail("Has to be joined to the meeting");
         }
         ControllableProperty muteCommand = new ControllableProperty();
-        muteCommand.setProperty("Call Control#Microphone Mute");
+        muteCommand.setProperty("CallControls#MicrophoneMute");
         if(MuteStatus.Muted.equals(zoomRoomsCommunicator.retrieveMuteStatus())){
             muteCommand.setValue(0);
             zoomRoomsCommunicator.controlProperty(muteCommand);
@@ -107,7 +107,7 @@ public class ZoomRoomsCommunicatorTest {
                 filter(advancedControllableProperty -> advancedControllableProperty.getName().equals("Call Control#Video Camera Mute")).findFirst().get();
 
         ControllableProperty muteCommand = new ControllableProperty();
-        muteCommand.setProperty("Call Control#Video Camera Mute");
+        muteCommand.setProperty("CallControls#VideoCameraMute");
         if(videoCameraMuteControl.getValue().equals(1)){
             muteCommand.setValue(0);
             zoomRoomsCommunicator.controlProperty(muteCommand);
@@ -153,7 +153,7 @@ public class ZoomRoomsCommunicatorTest {
     @Test
     public void cameraMove() throws Exception {
         ControllableProperty controllableProperty = new ControllableProperty();
-        controllableProperty.setProperty("Video Camera#Move Up");
+        controllableProperty.setProperty("CameraControls#MoveUp");
         zoomRoomsCommunicator.controlProperty(controllableProperty);
         // Nothing to assert here, only created for manual testing
     }
