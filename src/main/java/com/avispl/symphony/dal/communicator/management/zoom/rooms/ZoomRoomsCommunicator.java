@@ -45,6 +45,21 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
     private enum CameraMovementDirection {Up, Down, Left, Right}
 
+    private static final String CALL_CONTROLS_MICROPHONE_MUTE_LABEL = "CallControls#MicrophoneMute";
+    private static final String CALL_CONTROLS_CAMERA_MUTE_LABEL = "CallControls#CameraMute";
+    private static final String CAMERA_CONTROLS_UP_LABEL = "CameraControls#MoveUp";
+    private static final String CAMERA_CONTROLS_DOWN_LABEL = "CameraControls#MoveDown";
+    private static final String CAMERA_CONTROLS_LEFT_LABEL = "CameraControls#MoveLeft";
+    private static final String CAMERA_CONTROLS_RIGHT_LABEL = "CameraControls#MoveRight";
+    private static final String MEETING_NUMBER_ACTIVE_LABEL = "MeetingNumberActive";
+    private static final String MEETING_NUMBER_PERSONAL_LABEL = "MeetingNumberPersonal";
+    private static final String ZOOM_ROOMS_VERSION_LABEL = "ZoomRoomsVersion";
+    private static final String ACCOUNT_EMAIL_LABEL = "AccountEmail";
+    private static final String ROOM_NAME_LABEL = "RoomName";
+    private static final String OPERATING_SYSTEM_LABEL = "OperatingSystem";
+    private static final String VIDEO_CAMERA_SETTINGS_GROUP_LABEL = "VideoCameraSettings#";
+    private static final String AUDIO_SETTINGS_GROUP_LABEL = "AudioSettings#";
+
     private static final String ZCOMMAND_DIAL_START = "zcommand dial start meetingNumber:%s";
     private static final String ZCOMMAND_DIAL_JOIN = "zcommand dial join meetingNumber:%s";
     private static final String ZCOMMAND_CALL_LEAVE = "zcommand call leave\r";
@@ -142,29 +157,29 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             endpointStatistics.setCallStats(callStats);
 
             // Exposing these in case if the dial was issued directly from the device page
-            statistics.put("Call Control#Microphone Mute", "");
-            controls.add(createSwitch("Call Control#Microphone Mute", getMuteStatus() ? 1 : 0));
-            statistics.put("Call Control#Video Camera Mute", "");
-            controls.add(createSwitch("Call Control#Video Camera Mute", retrieveCameraMuteStatus() ? 1 : 0));
+            statistics.put(CALL_CONTROLS_MICROPHONE_MUTE_LABEL, "");
+            controls.add(createSwitch(CALL_CONTROLS_MICROPHONE_MUTE_LABEL, getMuteStatus() ? 1 : 0));
+            statistics.put(CALL_CONTROLS_CAMERA_MUTE_LABEL, "");
+            controls.add(createSwitch(CALL_CONTROLS_CAMERA_MUTE_LABEL, retrieveCameraMuteStatus() ? 1 : 0));
 
-            statistics.put("Video Camera#Move Up", "");
-            controls.add(createButton("Video Camera#Move Up", "Up", "Up", 0));
-            statistics.put("Video Camera#Move Down", "");
-            controls.add(createButton("Video Camera#Move Down", "Down", "Down", 0));
-            statistics.put("Video Camera#Move Left", "");
-            controls.add(createButton("Video Camera#Move Left", "Left", "Left", 0));
-            statistics.put("Video Camera#Move Right", "");
-            controls.add(createButton("Video Camera#Move Right", "Right", "Right", 0));
+            statistics.put(CAMERA_CONTROLS_UP_LABEL, "");
+            controls.add(createButton(CAMERA_CONTROLS_UP_LABEL, "Up", "Up", 0));
+            statistics.put(CAMERA_CONTROLS_DOWN_LABEL, "");
+            controls.add(createButton(CAMERA_CONTROLS_DOWN_LABEL, "Down", "Down", 0));
+            statistics.put(CAMERA_CONTROLS_LEFT_LABEL, "");
+            controls.add(createButton(CAMERA_CONTROLS_LEFT_LABEL, "Left", "Left", 0));
+            statistics.put(CAMERA_CONTROLS_RIGHT_LABEL, "");
+            controls.add(createButton(CAMERA_CONTROLS_RIGHT_LABEL, "Right", "Right", 0));
 
-            statistics.put("Meeting Number (Active)", meetingId);
+            statistics.put(MEETING_NUMBER_ACTIVE_LABEL, meetingId);
         } else {
-            statistics.remove("Meeting Number (Active)");
-            statistics.remove("Call Control#Microphone Mute");
-            statistics.remove("Call Control#Video Camera Mute");
-            statistics.remove("Video Camera#Move Up");
-            statistics.remove("Video Camera#Move Down");
-            statistics.remove("Video Camera#Move Left");
-            statistics.remove("Video Camera#Move Right");
+            statistics.remove(MEETING_NUMBER_ACTIVE_LABEL);
+            statistics.remove(CALL_CONTROLS_MICROPHONE_MUTE_LABEL);
+            statistics.remove(CALL_CONTROLS_CAMERA_MUTE_LABEL);
+            statistics.remove(CAMERA_CONTROLS_UP_LABEL);
+            statistics.remove(CAMERA_CONTROLS_DOWN_LABEL);
+            statistics.remove(CAMERA_CONTROLS_LEFT_LABEL);
+            statistics.remove(CAMERA_CONTROLS_RIGHT_LABEL);
         }
 
         extendedStatistics.setStatistics(statistics);
@@ -231,10 +246,11 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
 
         lineParameters.forEach((key, value) -> {
             if (key.endsWith("Name") || key.endsWith(" Selected")) {
+                String normalizedKey = key.replaceAll(" ", "");
                 if (key.startsWith("Audio")) {
-                    statistics.put("Audio Settings#" + key, value);
+                    statistics.put(AUDIO_SETTINGS_GROUP_LABEL + normalizedKey, value);
                 } else if (key.startsWith("Video Camera")) {
-                    statistics.put("Video Camera Settings#" + key, value);
+                    statistics.put(VIDEO_CAMERA_SETTINGS_GROUP_LABEL + normalizedKey, value);
                 }
             }
         });
@@ -243,19 +259,19 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
             String keyValue = key.replace("SystemUnit ", "").replace("room_info", "");
             switch (keyValue) {
                 case "room_version":
-                    statistics.put("Zoom Rooms Version", value);
+                    statistics.put(ZOOM_ROOMS_VERSION_LABEL, value);
                     break;
                 case "meeting_number":
-                    statistics.put("Meeting Number (Personal)", value);
+                    statistics.put(MEETING_NUMBER_PERSONAL_LABEL, value);
                     break;
                 case "account_email":
-                    statistics.put("Account Email", value);
+                    statistics.put(ACCOUNT_EMAIL_LABEL, value);
                     break;
                 case "room_name":
-                    statistics.put("Room Name", value);
+                    statistics.put(ROOM_NAME_LABEL, value);
                     break;
                 case "platform":
-                    statistics.put("Platform", value);
+                    statistics.put(OPERATING_SYSTEM_LABEL, value);
                     break;
             }
         });
@@ -647,22 +663,22 @@ public class ZoomRoomsCommunicator extends SshCommunicator implements CallContro
         String value = String.valueOf(controllableProperty.getValue());
 
         switch (property) {
-            case "Video Camera#Move Up":
+            case CAMERA_CONTROLS_UP_LABEL:
                 moveCamera(CameraMovementDirection.Up);
                 break;
-            case "Video Camera#Move Down":
+            case CAMERA_CONTROLS_DOWN_LABEL:
                 moveCamera(CameraMovementDirection.Down);
                 break;
-            case "Video Camera#Move Left":
+            case CAMERA_CONTROLS_LEFT_LABEL:
                 moveCamera(CameraMovementDirection.Left);
                 break;
-            case "Video Camera#Move Right":
+            case CAMERA_CONTROLS_RIGHT_LABEL:
                 moveCamera(CameraMovementDirection.Right);
                 break;
-            case "Call Control#Video Camera Mute":
+            case CALL_CONTROLS_CAMERA_MUTE_LABEL:
                 switchCameraMuteStatus(value.equals("1"));
                 break;
-            case "Call Control#Microphone Mute":
+            case CALL_CONTROLS_MICROPHONE_MUTE_LABEL:
                 switchMuteStatus(value.equals("1"));
                 break;
             default:
